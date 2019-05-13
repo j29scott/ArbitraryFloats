@@ -1,39 +1,152 @@
+import logging
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.ERROR)
+
+import slap.computation.bitvec as BV
+from enum import Enum
+import copy
+import math
+
+class RoundingMode(Enum):
+    RNE=1
+    RNA=2
+    RU=3
+    RD=4
+    RZ=4
+    
+defaultRoundingMode = RoundingMode.RNE
 
 class Float():
-    def __init__(self,val=None,ne=None,ns=None,width=None):
-        self.ne = ne
-        self.ns = ns
-        self.width = width
+    def __init__(self,val,nE :int ,nS :int):
+        self.nE = nE
+        self.nS = nS-1
+        self.ebv = BV.BV(0,nE)
+        self.eval = 0
+        self.sbv = BV.BV(0,nS-1)
+        self.bias = 2**(nE-1)-1
+        self.sign = False
+        self.eMin = -self.bias + 1
+        self.eMax = 2**nE -1 - self.bias - 1
+        
+        if isinstance(val, float):
+            
+            if val == 0:
+                return
+            if math.isnan(val):
+                for i in range(self.nE):
+                    self.ebv[i] = 1
+                for i in range(self.nS):
+                    self.sbv[i] = 0
+                return
 
-        if self.ne == None and self.ns == None:
-            assert self.width != None, "Must specify a width!"
-            if self.width < 3:
-                assert self.width != None, "Not enough Width!"
-            elif width < 16:
-                if width % 2 == 0:
-                    self.ns = self.ne = self.width//2
-                else:
-                    self.ne = self.width //2
-                    self.ns == self.ne + 1
+            
+            if(val >= 0):
+                self.sign = False
             else:
-                self.ns = round((self.width - 5.1)/1.092)
-                self.ne = self.width - self.ns
-
-        self.ebv = None
-        self.sbv = None
-        if val != None:
-            self.val(val)
+                self.sign = True
+                val = -val
+            
+            exp = -self.eMin - nS - 10
+            while True:
+                lower = 1.0 * 2.0 ** (exp)
+                upper = 1.0 * 2.0 ** (exp+1)
+                
+                if val < lower and exp == 0:
+                    break
+                
+                if val >= lower and  val < upper: 
+                    break
+                exp += 1
+                assert exp < 10000, "Way to big of a float for this toy function."
+                if(exp == nE+1): # is inf, make inf
+                    FMakeInf(self.sign,self.nE,self.nS)
+                
+                    for i in range(self.nE):
+                        self.ebv[i] = True
+                    for i in range(self.nS):
+                        self.sbv[i] = False
+                    return
+                
+            self.eval = exp
+            sub = 0
+            if(self.eval <= self.eMin-1):
+                self.ebv = BV.BV(0,nE)
+                sub = 1
+            else:
+                self.ebv = BV.BV(self.eval + self.bias ,nE)
+            self.eval = max(self.eval, self.eMin-1)
+            mantDecimal = 0.0
+            
+            
+            if int(self.ebv) != 0:
+                mantDecimal = 1.0
+            for i in range(self.nS):
+                comp = (mantDecimal + 2**(-1-i)) * 2 ** (self.eval + sub)
+                if val >= comp:
+                    mantDecimal += + 2**(-1-i)
+                    self.sbv[i] = True
+        elif isinstance(val, str):	
+            if(val == "+inf"):
+                self.sign = False
+                for i in range(nE):
+                    self.ebv[i] = True
+                for i in range(nS-1):
+                    self.sbv[i] = False
+                eval = self.eMax + 1
+                return
+            if(val == "-inf"):
+                self.sign = True
+                for i in range(nE):
+                    self.ebv[i] = True
+                for i in range(nS-1):
+                    self.sbv[i] = False
+                self.eval = self.eMax + 1
+                return
+            if(val == "nan"):
+                self.sign = False
+                for i in range(nE):
+                    self.ebv[i] = True
+                for i in range(nS-1):
+                    self.sbv[i] = True
+                self.eval = 123456
+                return
+                
+                
+            assert len(val) == nE + nS, "bit string not equal to exp + sig"
+            self.sign = val[0] == '1'
+            iVal = 1
+            for i in range(self.nE):
+                self.ebv[i] = val[iVal] == '1'
+                iVal += 1
+            for i in range(self.nS):
+                self.sbv[i] = val[iVal] == '1'
+                iVal += 1
+            self.eval = int(self.ebv) - self.bias
+        elif isinstance(val, list) and len(val) == 3:
+            if (isinstance(val[0],bool) or (isinstance(val[0],int) and (val[0] == 0 or val[0] == 1))) and (isinstance(val[1],int) or isinstance(val[1],BV)) and (isinstance(val[2],BV)):
+                if isinstance(val[0],bool):
+                    self.sign = val[0]
+                else: #int
+                    self.sign = val[0] == 1
+                    
+                    
+                if isinstance(val[1],int):
+                    self.eval = val[1]
+                    if val[1] != self.eMin-1:
+                        self.ebv = BV.BV(val[1] + self.bias ,nE)
+                    else:
+                        self.ebv = BV.BV(0,nE)
+                else: #BV
+                    self.ebv = val[1]
+                    self.eval = int(val[1]) - self.bias
+                if isinstance(val[2],BV):
+                    assert val[2].n == self.nS, "Wrong length!"
+                    self.sbv = val[2]
+            else :
+                assert False , "Bad array on Float Constructor"
+        else:
+            assert False , "Failed to create Float"
     
-    def val(self,val):
-        assert isinstance(val,str)
-        val = val.split()
-        assert len(val) == 1 or len(val) == 2
-        pass
-
-
-    def __eq__(self,val):
-        print(val)
-
     def __float__(self):
         mant = 0.0
         subnormal = 1
@@ -92,11 +205,11 @@ class Float():
         return FGEQ(self,other)
 
     def __add__(self,other):
-        return FAdd(self,other, None)
+        return FAdd(self,other, defaultRoundingMode)
     def __sub__(self,other):
-        return FAdd(self,FNeg(other), None)
+        return FAdd(self,FNeg(other), defaultRoundingMode)
     def __mul__(self,other):
-        return FMul(self,other,None)
+        return FMul(self,other,defaultRoundingMode)
     def __eq__(self,other):
         return FEq(self,other)
 
@@ -121,7 +234,7 @@ def FIsInf(flt):
 def FIsZero(flt):
     return int(flt.ebv) == 0 and int(flt.sbv) == 0
 
-def FRound(sign, exp, mantisa, nE, nS, roundBit,stickyBit, roundingMode = None):
+def FRound(sign, exp, mantisa, nE, nS, roundBit,stickyBit, roundingMode = defaultRoundingMode):
     assert isinstance(sign, bool) , "First Argument [sign] is of bool type."
     assert isinstance(exp,int), "Second Argument [exp] is of int type."
     assert isinstance(mantisa,BV), "Third Argument [mantisa] is of the BV type"
@@ -241,7 +354,7 @@ def FRound(sign, exp, mantisa, nE, nS, roundBit,stickyBit, roundingMode = None):
             return succ
     
                     
-def FAdd(x,y, roundingMode = None):
+def FAdd(x,y, roundingMode = defaultRoundingMode):
     assert isinstance (x,Float) and isinstance(y,Float), "Non Float instance"
     assert x.nS == y.nS and x.nE == y.nE, "different precision addition not ready yet."
     
@@ -355,7 +468,7 @@ def FMakeNan(nE,nS):
     return ret
 
 
-def FMul(x,y,roundingMode = None):
+def FMul(x,y,roundingMode = defaultRoundingMode):
     
     rSign = (not x.sign and  y.sign) or (x.sign and not y.sign)
     
@@ -449,7 +562,7 @@ def FIsPositive(x):
 def FIsNegative(x):
     return x.sign == True
 
-def FSqrt(x,roundingMode = None):
+def FSqrt(x,roundingMode = defaultRoundingMode):
     if FIsZero(x):
         return FMakeZero(x.sign,x.nE,x.nS)
     if FIsNan(x) or FIsNegative(x):
