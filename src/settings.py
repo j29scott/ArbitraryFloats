@@ -1,1 +1,0 @@
-def_round_mode = 'RNE'
